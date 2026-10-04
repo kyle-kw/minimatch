@@ -598,9 +598,36 @@ export class Minimatch {
     })
   }
 
+  // Capture the root before optimizing so a relative path cannot acquire
+  // a drive root when its leading portions are removed.
+  #windowsRootLength(parts: string[]) {
+    if (!this.isWindows) return 0
+    if (/^[a-z]:$/i.test(parts[0])) return 1
+    if (parts[0] !== '' || parts[1] !== '') return 0
+
+    const length = parts[2] === '?' && /^UNC$/i.test(parts[3]) ? 6 : 4
+    const server = parts[length - 2]
+    const share = parts[length - 1]
+    // A globstar is not a single server/share component. Incomplete or
+    // dot-containing prefixes are not UNC roots either.
+    return (
+        server &&
+          share &&
+          server !== '.' &&
+          server !== '..' &&
+          server !== '**' &&
+          share !== '.' &&
+          share !== '..' &&
+          share !== '**'
+      ) ?
+        length
+      : 0
+  }
+
   // get rid of adjascent ** and resolve .. portions
   levelOneOptimize(globParts: string[][]) {
     return globParts.map(parts => {
+      const rootLength = this.#windowsRootLength(parts)
       parts = parts.reduce((set: string[], part) => {
         const prev = set[set.length - 1]
         if (part === '**' && prev === '**') {
@@ -608,7 +635,7 @@ export class Minimatch {
         }
         if (part === '..') {
           if (prev && prev !== '..' && prev !== '.' && prev !== '**') {
-            set.pop()
+            if (set.length !== rootLength) set.pop()
             return set
           }
         }
@@ -623,6 +650,7 @@ export class Minimatch {
     if (!Array.isArray(parts)) {
       parts = this.slashSplit(parts)
     }
+    const rootLength = this.#windowsRootLength(parts)
     let didSomething: boolean = false
 
     do {
@@ -653,16 +681,15 @@ export class Minimatch {
       let dd: number = 0
       while (-1 !== (dd = parts.indexOf('..', dd + 1))) {
         const p = parts[dd - 1]
-        if (
-          p &&
-          p !== '.' &&
-          p !== '..' &&
-          p !== '**' &&
-          !(this.isWindows && /^[a-z]:$/i.test(p))
-        ) {
+        if (p && p !== '.' && p !== '..' && p !== '**') {
           didSomething = true
-          parts.splice(dd - 1, 2)
-          dd -= 2
+          if (dd === rootLength) {
+            parts.splice(dd, 1)
+            dd--
+          } else {
+            parts.splice(dd - 1, 2)
+            dd -= 2
+          }
         }
       }
     } while (didSomething)
@@ -688,11 +715,18 @@ export class Minimatch {
   // **/*/<rest> -> */**/<rest> <== not valid because ** doesn't follow
   // this WOULD be allowed if ** did follow symlinks, or * didn't
   firstPhasePreProcess(globParts: string[][]) {
+    const roots =
+      this.isWindows ?
+        new Map(
+          globParts.map(parts => [parts, this.#windowsRootLength(parts)]),
+        )
+      : undefined
     let didSomething = false
     do {
       didSomething = false
       // <pre>/**/../<p>/<p>/<rest> -> {<pre>/../<p>/<p>/<rest>,<pre>/**/<p>/<p>/<rest>}
       for (let parts of globParts) {
+        const rootLength = roots?.get(parts) ?? 0
         let gs: number = -1
         while (-1 !== (gs = parts.indexOf('**', gs + 1))) {
           let gss: number = gs
@@ -726,6 +760,7 @@ export class Minimatch {
           const other = parts.slice(0)
           other[gs] = '**'
           globParts.push(other)
+          roots?.set(other, rootLength)
           gs--
         }
 
@@ -757,11 +792,16 @@ export class Minimatch {
           const p = parts[dd - 1]
           if (p && p !== '.' && p !== '..' && p !== '**') {
             didSomething = true
-            const needDot = dd === 1 && parts[dd + 1] === '**'
-            const splin = needDot ? ['.'] : []
-            parts.splice(dd - 1, 2, ...splin)
-            if (parts.length === 0) parts.push('')
-            dd -= 2
+            if (dd === rootLength) {
+              parts.splice(dd, 1)
+              dd--
+            } else {
+              const needDot = dd === 1 && parts[dd + 1] === '**'
+              const splin = needDot ? ['.'] : []
+              parts.splice(dd - 1, 2, ...splin)
+              if (parts.length === 0) parts.push('')
+              dd -= 2
+            }
           }
         }
       }

@@ -425,6 +425,11 @@ is equivalent in all cases).
   string is first processed with
   `minimatch.levelTwoFileOptimize()` or similar.
 
+On Windows, optimization levels 1 and 2 do not allow `..` to remove
+a drive root or the server/share portion of a UNC root. For example,
+`C:/foo/../..` matches `C:/`, and `//server/share/../x` matches
+`//server/share/x`. At level 2, the same rule is applied to file paths.
+
 ### platform
 
 When set to `win32`, this will trigger all windows-specific
